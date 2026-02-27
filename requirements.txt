@@ -1,0 +1,32 @@
+# ── FIGYELEM ────────────────────────────────────────────────────────────────
+# Windows esetén NE ezzel telepíts! Használd az install.bat fájlt.
+# Linux/macOS: bash install.sh
+#
+# Ha mégis kézzel telepítesz, a PyTorch-ot KÜLÖN kell telepíteni:
+#   pip install torch --index-url https://download.pytorch.org/whl/cpu
+# ────────────────────────────────────────────────────────────────────────────
+
+# ── Core NLP ────────────────────────────────────────────────────────────────
+spacy>=3.7,<4.0
+huspacy>=0.4.0
+transformers>=4.35.0
+# torch – külön telepítendő! (ld. fent)
+
+# ── Topic modelling ─────────────────────────────────────────────────────────
+bertopic>=0.16.0
+scikit-learn>=1.3.0
+
+# ── Data & riport ───────────────────────────────────────────────────────────
+pandas>=2.0.0
+openpyxl>=3.1.0
+chardet>=5.0.0
+
+# ── Vizualizáció ────────────────────────────────────────────────────────────
+matplotlib>=3.7.0
+wordcloud>=1.9.0
+
+# ── GDPR / Offline mód ──────────────────────────────────────────────────────
+# A sentiment modell az első futáskor letöltődik a models/ mappába.
+# Utána internet nélkül is fut.
+# Kézi offline előkészítés:
+#   python -c "from huspacy_elemzo import FejlettSentimentElemzo; m=FejlettSentimentElemzo(); m.modell_cache_letoltes()"
