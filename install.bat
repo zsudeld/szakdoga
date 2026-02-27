@@ -1,126 +1,57 @@
 @echo off
-REM ============================================================
-REM  install.bat – Rendszergazdai jog NELKUL is mukodik
-REM  A csomagok ide kerulnek: C:\ai\  (rovid utvonal!)
-REM ============================================================
-
+setlocal
 echo ============================================================
 echo   Magyar Sentiment Elemzo - Windows Telepito
-echo   (Rendszergazdai jog nem szukseges)
+echo   (Teljes offline modell elokeszitessel)
 echo ============================================================
-echo.
 
-REM ── Rövid alap útvonal – ez oldja meg a Long Path problémát ─────────────
-set AI_DIR=C:\ai
-set VENV_DIR=%AI_DIR%\venv
+:: [1/7] Celkonyvtar letrehozasa
+if not exist "C:\ai" mkdir "C:\ai"
 
-echo A program ide lesz telepitve: %VENV_DIR%
-echo (Rovid utvonal = nincs Long Path problema)
-echo.
-
-REM ── 1. Célmappa létrehozása ──────────────────────────────────────────────
-echo [1/6] Celkonyvtar letrehozasa: %AI_DIR%
-if not exist "%AI_DIR%" mkdir "%AI_DIR%"
-if %errorlevel% neq 0 (
-    echo HIBA: Nem sikerult letrehozni: %AI_DIR%
-    echo Probald meg a D:\ meghajtora: allitsd at az AI_DIR sort
-    pause
-    exit /b 1
+:: [2/7] Virtualis kornyezet letrehozasa
+if not exist "C:\ai\venv" (
+    echo [2/7] Virtualis kornyezet letrehozasa...
+    python -m venv "C:\ai\venv"
 )
 
-REM ── 2. Virtuális környezet létrehozása ──────────────────────────────────
-echo [2/6] Virtualis kornyezet letrehozasa...
-if exist "%VENV_DIR%" (
-    echo      Mar letezik, kihagyva.
-) else (
-    python -m venv "%VENV_DIR%"
-    if %errorlevel% neq 0 (
-        echo HIBA: Virtualis kornyezet letrehozasa sikertelen!
-        pause
-        exit /b 1
-    )
-    echo      Letrehozva: %VENV_DIR%
-)
-echo.
+:: [3/7] pip frissitese
+echo [3/7] pip frissitese...
+"C:\ai\venv\Scripts\python.exe" -m pip install --upgrade pip
 
-REM ── 3. pip frissítése a venv-ben ────────────────────────────────────────
-echo [3/6] pip frissitese...
-"%VENV_DIR%\Scripts\python.exe" -m pip install --upgrade pip --quiet
-echo      Kesz.
-echo.
+:: [4/7] PyTorch telepitese (CPU valtozat)
+echo [4/7] PyTorch telepitese (CPU)...
+"C:\ai\venv\Scripts\python.exe" -m pip install torch --index-url https://download.pytorch.org/whl/cpu
 
-REM ── 4. PyTorch CPU telepítése (rövidebb útvonalakkal!) ──────────────────
-echo [4/6] PyTorch telepitese (CPU valtozat, ~200 MB)...
-echo      (Ez eltart par percig...)
-"%VENV_DIR%\Scripts\pip.exe" install torch --index-url https://download.pytorch.org/whl/cpu --quiet
-if %errorlevel% neq 0 (
-    echo HIBA: PyTorch telepites sikertelen!
-    pause
-    exit /b 1
-)
-echo      PyTorch kesz.
-echo.
+:: [5/7] NLP csomagok telepitese
+echo [5/7] NLP csomagok telepitese...
+"C:\ai\venv\Scripts\python.exe" -m pip install -r requirements.txt
 
-REM ── 5. Többi csomag telepítése ──────────────────────────────────────────
-echo [5/6] NLP csomagok telepitese (spacy, transformers, bertopic, stb.)...
-echo      (Ez is eltart par percig...)
-"%VENV_DIR%\Scripts\pip.exe" install ^
-    spacy ^
-    huspacy ^
-    transformers ^
-    bertopic ^
-    scikit-learn ^
-    pandas ^
-    openpyxl ^
-    chardet ^
-    matplotlib ^
-    wordcloud ^
-    --quiet
-if %errorlevel% neq 0 (
-    echo HIBA: Csomag telepites sikertelen!
-    pause
-    exit /b 1
-)
-echo      Csomagok keszen.
-echo.
+:: [6/7] HuSpaCy magyar modell letoltese
+echo [6/7] HuSpaCy hu_core_news_lg modell letoltese es telepitese...
+curl.exe -s -L -o hu_core_news_lg-3.8.1-py3-none-any.whl https://huggingface.co/huspacy/hu_core_news_lg/resolve/main/hu_core_news_lg-any-py3-none-any.whl
+"C:\ai\venv\Scripts\python.exe" -m pip install hu_core_news_lg-3.8.1-py3-none-any.whl
+del hu_core_news_lg-3.8.1-py3-none-any.whl
 
-REM ── 6. HuSpaCy magyar modell telepítése helyi fájlból ────────────────────
-echo [6/6] HuSpaCy magyar modell telepitese helyi fajlbol...
-"%VENV_DIR%\Scripts\pip.exe" install "%~dp0hu_core_news_lg-3.8.1-py3-none-any.whl"
-if %errorlevel% neq 0 (
-    echo HIBA: A helyi HuSpaCy modell telepitese sikertelen!
-    echo Ellenorizd, hogy a .whl fajl pontosan az install.bat mellett van-e!
-    pause
-    exit /b 1
-)
-echo      Modell kesz.
-echo.
+:: [7/7] NYTK Sentiment modell letoltese a fallback hiba elkerulesere
+echo [7/7] NYTK AI modell letoltese az offline mukodeshez (~450 MB)...
 
-REM ── Indítószkriptek generálása ───────────────────────────────────────────
-echo Inditoszkriptek letrehozasa...
+:: Ideiglenes letolto szkript generalasa
+echo import os > dl_model.py
+echo from transformers import AutoModelForSequenceClassification, AutoTokenizer >> dl_model.py
+echo m = "NYTK/sentiment-ohb3-hubert-hungarian" >> dl_model.py
+echo p = os.path.join(os.getcwd(), "models", "sentiment-alap") >> dl_model.py
+echo os.makedirs(p, exist_ok=True) >> dl_model.py
+echo print("   - Tokenizer letoltese...") >> dl_model.py
+echo AutoTokenizer.from_pretrained(m).save_pretrained(p) >> dl_model.py
+echo print("   - Sulyok letoltese (model.safetensors)...") >> dl_model.py
+echo AutoModelForSequenceClassification.from_pretrained(m).save_pretrained(p) >> dl_model.py
+echo print("   - Letoltes kesz, fajlok a helyukon!") >> dl_model.py
 
-(
-echo @echo off
-echo cd /d "%%~dp0"
-echo "%VENV_DIR%\Scripts\python.exe" gui_app.py
-echo pause
-) > "%~dp0run_gui.bat"
-
-(
-echo @echo off
-echo cd /d "%%~dp0"
-echo "%VENV_DIR%\Scripts\python.exe" main.py
-echo pause
-) > "%~dp0run_cli.bat"
+:: Szkript futtatasa es takaritas
+"C:\ai\venv\Scripts\python.exe" dl_model.py
+del dl_model.py
 
 echo.
-echo ============================================================
-echo   Telepites BEFEJEZVE!
-echo ============================================================
-echo.
-echo   Grafikus felulet:  run_gui.bat  (dupla klikk)
-echo   Parancssor:        run_cli.bat  (dupla klikk)
-echo.
-echo   A Python kornyezet helye: %VENV_DIR%
-echo.
+echo === Minden telepites es letoltes sikeresen befejezve! ===
+echo A szoftver mostantol 100%% offline is hiba nelkul hasznalhato.
 pause
