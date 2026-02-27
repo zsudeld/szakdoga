@@ -593,6 +593,28 @@ def _mondatszintu_osszefoglalo(mondatok: list) -> str:
     return " | ".join(reszek)
 
 
+def _mondatszintu_osszefoglalo_doc(doc) -> str:
+    """
+    Tájékoztató mondatszintű bontás kizárólag az adott sor doc-jából.
+    Csak HuSpaCy szótári pontot használ – szomszéd sorok adatai
+    semmilyen körülmények között nem kerülnek ide.
+    """
+    reszek = []
+    for i, sent in enumerate(doc.sents, 1):
+        szoveg = sent.text.strip()
+        if len(szoveg) < 5:
+            continue
+        pont = _szotari_pontszam(sent.as_doc())
+        if pont > _HUSPACY_KAT_KUSZOOB:
+            kat = "poz"
+        elif pont < -_HUSPACY_KAT_KUSZOOB:
+            kat = "neg"
+        else:
+            kat = "sem"
+        reszek.append(f"M{i}:{kat}({pont:+.2f})")
+    return " | ".join(reszek)
+
+
 def _hiba_eredmeny(szoveg: str, hiba: str) -> Dict:
     """Hibás feldolgozás esetén visszaadott alapértelmezett eredmény."""
     return {
@@ -642,17 +664,15 @@ class FejlettSentimentElemzo:
         print("Elemző kész!\n")
 
     def elemez_egyet(self, szoveg: str) -> Dict:
-        """Egyetlen szöveg teljes NLP elemzése mondatszintű bontással."""
+        """Egyetlen szöveg (sor) teljes NLP elemzése. Az elemzés egysége maga a sor."""
         tiszta = _tisztit(str(szoveg))
         doc    = self.nlp(tiszta)
 
-        mondatok = _mondatszintu_sentimentek(doc, self.sentiment)
+        # HuSpaCy: teljes sor pontszáma (nem mondatonként)
+        huspacy_pont = _szotari_pontszam(doc)
 
-        huspacy_pont, modell_kat, modell_conf = _aggregalt_sentiment(mondatok)
-
-        # Ha csak 1 mondat van, közvetlen elemzés pontosabb
-        if len(mondatok) == 1:
-            modell_kat, modell_conf = _modell_elemez(tiszta, self.sentiment)
+        # NYTK: teljes sor szövege
+        modell_kat, modell_conf = _modell_elemez(tiszta, self.sentiment)
 
         if huspacy_pont > _HUSPACY_KAT_KUSZOOB:
             huspacy_kat = "pozitív"
@@ -672,7 +692,7 @@ class FejlettSentimentElemzo:
             "hunbert_confidence":      round(modell_conf, 4),
             "hibrid_kategoria":        hibrid_kat,
             "hibrid_megalapozas":      megalapozas,
-            "mondatszintu_sentiment":  _mondatszintu_osszefoglalo(mondatok),
+            "mondatszintu_sentiment":  _mondatszintu_osszefoglalo_doc(doc),
             "pozitiv_elemek":          _pozitiv_elemek(doc),
             "negativ_elemek":          _negativ_elemek(doc),
             "emlitett_nevek":          _ner_entitasok(doc),
@@ -689,18 +709,23 @@ class FejlettSentimentElemzo:
         batch_meret: int = 16,
     ) -> Generator[Dict, None, None]:
         """
-        Batch elemzés generátorként – optimalizált feldolgozással.
+        Batch elemzés generátorként – sor-szintű feldolgozással.
 
-        1. HuSpaCy nlp.pipe(): egyszeri batch feldolgozás (sokkal gyorsabb mint egyesével)
-        2. NYTK batch: minden mondat egyszerre kerül feldolgozásra
-        3. Eredmények összeállítása
+        Az elemzés egysége a CSV sor (nem a mondat).
+        Egy sor akárhány mondatot tartalmazhat – az NYTK és a HuSpaCy
+        is mindig a teljes sort kapja inputként, sosem szomszéd sorok
+        mondatait.
+
+        1. HuSpaCy nlp.pipe(): soronként külön Doc (nincs átnyúlás)
+        2. NYTK batch: teljes sor szövegét kapja (nem mondatokat)
+        3. Eredmények összeállítása – minden mező csak az adott sorból
         """
         if not szovegek:
             return
 
         tisztitott = [_tisztit(str(s)) for s in szovegek]
 
-        # --- 1. HuSpaCy batch (nlp.pipe) ---
+        # --- 1. HuSpaCy batch (nlp.pipe) – soronként önálló Doc ---
         try:
             docs = list(self.nlp.pipe(tisztitott, batch_size=32))
         except Exception as e:
@@ -712,24 +737,15 @@ class FejlettSentimentElemzo:
                 except Exception:
                     docs.append(self.nlp(""))
 
-        # --- 2. Mondatok összegyűjtése NYTK batch-hez ---
-        # Struktúra: [(doc_idx, sent_idx, mondat_szoveg), ...]
-        osszes_mondat = []
-        for doc_idx, doc in enumerate(docs):
-            for sent_idx, sent in enumerate(doc.sents):
-                szoveg = sent.text.strip()
-                if len(szoveg) >= 5:
-                    osszes_mondat.append((doc_idx, sent_idx, szoveg))
+        # --- 2. NYTK batch – teljes sor szövege, NEM mondatok ---
+        # Kulcs: doc_idx (= sor sorszáma), értéke: (kategória, konfidencia)
+        nytk_sor_cache: dict = {}  # doc_idx -> (kat, conf)
 
-        # --- 3. NYTK batch feldolgozás ---
-        nytk_cache: dict = {}  # (doc_idx, sent_idx) -> (kat, conf)
-
-        if self.sentiment is not None and osszes_mondat:
+        if self.sentiment is not None:
             try:
-                mondat_szovegek = [m[2][:512] for m in osszes_mondat]
                 raw_batch: list = []
-                for i in range(0, len(mondat_szovegek), batch_meret):
-                    chunk     = mondat_szovegek[i : i + batch_meret]
+                for i in range(0, len(tisztitott), batch_meret):
+                    chunk     = [t[:512] for t in tisztitott[i : i + batch_meret]]
                     raw_chunk = self.sentiment(chunk)
                     # top_k=None: [[{...}, ...], [{...}, ...]]
                     if raw_chunk and isinstance(raw_chunk[0], list):
@@ -737,28 +753,24 @@ class FejlettSentimentElemzo:
                     else:
                         raw_batch.extend([[r] for r in raw_chunk])
 
-                for (doc_idx, sent_idx, _), raw in zip(osszes_mondat, raw_batch):
+                for doc_idx, raw in enumerate(raw_batch):
                     kat, conf = _feldolgoz_nytk_eredmeny(raw)
-                    nytk_cache[(doc_idx, sent_idx)] = (kat, conf)
+                    nytk_sor_cache[doc_idx] = (kat, conf)
 
             except Exception as e:
                 print(f"   Figyelem: NYTK batch hiba ({e}), szövegenkénti fallback")
-                # Fallback: egyesével
-                for doc_idx, sent_idx, szoveg in osszes_mondat:
+                for doc_idx, szoveg in enumerate(tisztitott):
                     kat, conf = _modell_elemez(szoveg, self.sentiment)
-                    nytk_cache[(doc_idx, sent_idx)] = (kat, conf)
+                    nytk_sor_cache[doc_idx] = (kat, conf)
 
-        # --- 4. Eredmények összeállítása ---
+        # --- 3. Eredmények összeállítása – minden mező kizárólag az adott sorból ---
         for doc_idx, (szoveg, tiszta, doc) in enumerate(zip(szovegek, tisztitott, docs)):
             try:
-                mondatok = _mondatszintu_sentimentek_cached(doc, doc_idx, nytk_cache)
-                huspacy_pont, modell_kat, modell_conf = _aggregalt_sentiment(mondatok)
+                # HuSpaCy pontszám: teljes sor doc-ján (nem sent.as_doc())
+                huspacy_pont = _szotari_pontszam(doc)
 
-                # Egymondatos szöveg: közvetlen (pontosabb) eredmény
-                if len(mondatok) == 1:
-                    direkt_kat, direkt_conf = nytk_cache.get((doc_idx, 0), (modell_kat, modell_conf))
-                    modell_kat  = direkt_kat
-                    modell_conf = direkt_conf
+                # NYTK eredmény: az adott sor indexéhez tartozó cache-bejegyzés
+                modell_kat, modell_conf = nytk_sor_cache.get(doc_idx, ("semleges", 0.5))
 
                 if huspacy_pont > _HUSPACY_KAT_KUSZOOB:
                     huspacy_kat = "pozitív"
@@ -769,6 +781,9 @@ class FejlettSentimentElemzo:
 
                 hibrid_kat, megalapozas = _hibrid_kategoria(huspacy_pont, modell_kat, modell_conf)
 
+                # Mondatszintű bontás (tájékoztató jellegű, csak az adott sor mondatai)
+                mondatszintu = _mondatszintu_osszefoglalo_doc(doc)
+
                 yield {
                     "eredeti_szoveg":          tiszta,
                     "lemmatizalt_szoveg":      _lemmatizal(doc),
@@ -778,7 +793,7 @@ class FejlettSentimentElemzo:
                     "hunbert_confidence":      round(modell_conf, 4),
                     "hibrid_kategoria":        hibrid_kat,
                     "hibrid_megalapozas":      megalapozas,
-                    "mondatszintu_sentiment":  _mondatszintu_osszefoglalo(mondatok),
+                    "mondatszintu_sentiment":  mondatszintu,
                     "pozitiv_elemek":          _pozitiv_elemek(doc),
                     "negativ_elemek":          _negativ_elemek(doc),
                     "emlitett_nevek":          _ner_entitasok(doc),
@@ -820,10 +835,38 @@ class FejlettSentimentElemzo:
 # BERTopic témafeltárás
 # ---------------------------------------------------------------------------
 
+BERTOPIC_EMBEDDING_MODELL = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+BERTOPIC_EMBEDDING_MAPPA  = MODELL_MAPPA / "bertopic-embedding"
+
+
+def _get_bertopic_embedding():
+    """
+    Betölti a BERTopic embedding modellt helyi cache-ből.
+    Ha a cache nem létezik, letölti és elmenti – utána offline is fut.
+    """
+    from sentence_transformers import SentenceTransformer
+
+    if BERTOPIC_EMBEDDING_MAPPA.exists():
+        print("   -> BERTopic embedding modell betöltése (helyi cache)...")
+        return SentenceTransformer(str(BERTOPIC_EMBEDDING_MAPPA))
+
+    print(f"   -> BERTopic embedding modell letöltése: {BERTOPIC_EMBEDDING_MODELL}")
+    print("      (Első indítás: ~120 MB, ezután offline is fut)")
+    modell = SentenceTransformer(BERTOPIC_EMBEDDING_MODELL)
+    try:
+        BERTOPIC_EMBEDDING_MAPPA.mkdir(parents=True, exist_ok=True)
+        modell.save(str(BERTOPIC_EMBEDDING_MAPPA))
+        print(f"   -> BERTopic embedding elmentve: {BERTOPIC_EMBEDDING_MAPPA}")
+    except Exception as e:
+        print(f"   Figyelem: BERTopic embedding mentés sikertelen: {e}")
+    return modell
+
+
 def generalj_temakat(szovegek: List[str], min_topic_size: int = 5) -> List[str]:
     """
     BERTopic témamodellezés automatikus fallback-kel.
-    Teljesen lokális futás, nem küld adatot külső szerverre.
+    Teljesen lokális futás – az embedding modell helyi cache-ből töltődik,
+    nem küld adatot külső szerverre.
     """
     if not szovegek:
         return []
@@ -834,13 +877,15 @@ def generalj_temakat(szovegek: List[str], min_topic_size: int = 5) -> List[str]:
         from bertopic import BERTopic
         from sklearn.feature_extraction.text import CountVectorizer
 
+        embedding_model = _get_bertopic_embedding()
+
         vectorizer = CountVectorizer(
             min_df=1,
             ngram_range=(1, 2),
             max_features=5000,
         )
         topic_model = BERTopic(
-            language="multilingual",
+            embedding_model=embedding_model,   # helyi modell, nem HF letöltés
             min_topic_size=min(min_topic_size, max(2, len(szovegek) // 5)),
             vectorizer_model=vectorizer,
             verbose=False,
