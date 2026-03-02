@@ -53,7 +53,20 @@ def _fejlec_cella(cell, szoveg: str):
 
 def _adat_cella(cell, ertek, alternalo: bool = False):
     """Adat cella alap formázás."""
-    cell.value     = str(ertek) if ertek is not None else ""
+    # Robustus NaN/None → üres string konverzió
+    if ertek is None:
+        ertek = ""
+    elif not isinstance(ertek, (str, int, float, bool)):
+        ertek = str(ertek)
+    elif isinstance(ertek, float) and (ertek != ertek):  # float NaN check
+        ertek = ""
+    try:
+        import pandas as _pd
+        if _pd.isna(ertek):
+            ertek = ""
+    except (TypeError, ValueError):
+        pass
+    cell.value     = str(ertek) if ertek != "" else ""
     cell.font      = Font(name='Arial', size=10)
     cell.alignment = Alignment(wrap_text=True, vertical='top')
     cell.border    = _VEKONY_BORDER
@@ -404,5 +417,5 @@ def generalj_riportot(
     _lap_entitasok(wb, df)
 
     wb.save(kimenet)
-    print(f"Professzionális Excel riport elkészült: {kimenet}")
+    print(f"Excel riport elkészült: {kimenet}")
     return kimenet
