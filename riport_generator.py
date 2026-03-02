@@ -1,7 +1,7 @@
 """
 riport_generator.py
 ===================
-Professzionális Excel riport generálása openpyxl-lel.
+Excel riport generálása openpyxl-lel.
 
 Javítások (v2):
   - ZeroDivisionError védelem _lap_temak-ban
@@ -266,21 +266,30 @@ def _lap_temak(wb: Workbook, df: pd.DataFrame):
     ws['A1'].font = Font(name='Arial', size=14, bold=True, color=_KEKFEJ)
     ws.merge_cells('A1:C1')
 
-    for col, txt in zip(['A', 'B', 'C'], ['Téma', 'Előfordulás', 'Százalék']):
-        cell        = ws[f'{col}3']
+    ws['A2'] = (
+        'Megjegyzés: Ez a lap korpusz-szintű témacsoportokat mutat (BERTopic klaszterek). '
+        'Az "Elemzési Eredmények" lap "Téma" oszlopa per-dokumentum TF-IDF kulcsszavakat tartalmaz.'
+    )
+    ws['A2'].font = Font(name='Arial', size=9, italic=True, color='666666')
+    ws.merge_cells('A2:C2')
+
+    for col, txt in zip(['A', 'B', 'C'], ['Témacsoport', 'Előfordulás', 'Százalék']):
+        cell        = ws[f'{col}4']
         cell.value  = txt
         cell.font   = Font(name='Arial', bold=True)
         cell.fill   = PatternFill(start_color=_VILAGOSKEK, fill_type='solid')
         cell.border = _VEKONY_BORDER
 
-    if 'tema_kulcsszavak' in df.columns:
-        tema_counts = df['tema_kulcsszavak'].value_counts()
+    # Előnyben részesítjük a BERTopic klaszter-oszlopot, fallback: per-doc kulcsszavak
+    tema_oszlop = 'bertopic_tema' if 'bertopic_tema' in df.columns else 'tema_kulcsszavak'
+
+    if tema_oszlop in df.columns:
+        tema_counts = df[tema_oszlop].value_counts()
         total       = len(df)
 
-        # ZeroDivisionError védelem: total > 0 garantált ha van adat
-        for row, (tema, count) in enumerate(tema_counts.head(15).items(), 4):
+        for row, (tema, count) in enumerate(tema_counts.head(20).items(), 5):
             a_cell        = ws[f'A{row}']
-            a_cell.value  = str(tema)[:50]
+            a_cell.value  = str(tema)[:60]
             a_cell.border = _VEKONY_BORDER
 
             b_cell        = ws[f'B{row}']
@@ -296,7 +305,7 @@ def _lap_temak(wb: Workbook, df: pd.DataFrame):
                 for col in ['A', 'B', 'C']:
                     ws[f'{col}{row}'].fill = PatternFill(start_color=_SZURKE, fill_type='solid')
 
-    ws.column_dimensions['A'].width = 50
+    ws.column_dimensions['A'].width = 55
     ws.column_dimensions['B'].width = 15
     ws.column_dimensions['C'].width = 12
 
@@ -417,5 +426,5 @@ def generalj_riportot(
     _lap_entitasok(wb, df)
 
     wb.save(kimenet)
-    print(f"Excel riport elkészült: {kimenet}")
+    print(f"Professzionális Excel riport elkészült: {kimenet}")
     return kimenet

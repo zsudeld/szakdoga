@@ -739,17 +739,47 @@ class FejlettSentimentElemzo:
 
 
 # ---------------------------------------------------------------------------
-# BERTopic témafeltárás
+# Témafeltárás – KÉT elkülönített szint
+#
+# 1. generalj_temakat()      → per-dokumentum TF-IDF kulcsszavak
+#                               (az "Elemzési Eredmények" lap Téma oszlopához)
+#                               Minden sor SAJÁT tartalmát tükrözi – nincs áthallás.
+#
+# 2. generalj_bertopic()     → BERTopic klaszterezés a teljes korpuszon
+#                               (a "Témaelemzés" lap összesítő táblájához)
+#                               Klaszter-szintű témacsoportok – helyes felhasználás.
+#
+# MIÉRT VOLT PROBLÉMA? BERTopic klaszter-kulcsszavakat írt minden sorba:
+#   ha 17 éttermi szöveg kerül egy klaszterbe, mind a 17 sor kapja
+#   a "hús, hideg, rántott, étel" kulcsszavakat – még a "Fantasztikus volt
+#   a kiszolgálás" sor is, holott abban nincs szó húsról.
+#   A klaszter-kulcsszó a CSOPORT reprezentatív szava, nem az adott soré.
 # ---------------------------------------------------------------------------
+
+# Magyar stopszavak az egyedi kulcsszó-kinyeréshez
+_HU_STOPSZAVAK: set = {
+    "a", "az", "és", "hogy", "is", "de", "meg", "egy", "el", "van",
+    "nem", "ezt", "azt", "ez", "én", "te", "mi", "ti", "ők", "ami",
+    "aki", "volt", "lett", "csak", "már", "még", "sem", "se", "ha",
+    "ki", "be", "fel", "le", "on", "ön", "őt", "itt", "ott", "úgy",
+    "így", "ha", "ha", "mint", "mert", "csak", "igen", "nem", "igen",
+    "vele", "neki", "abban", "ebben", "azon", "ezen", "amiért", "amely",
+    "amelyet", "amelynek", "amelyben", "amellyel", "amelyre", "ezért",
+    "azért", "ezzel", "azzal", "erről", "arról", "ebből", "abból",
+    "ehhez", "ahhoz", "ettől", "attól", "erre", "arra", "ide", "oda",
+    "innen", "onnan", "addig", "eddig", "majd", "talán", "szinte",
+    "persze", "hiszen", "tehát", "viszont", "azonban", "ám", "bár",
+    "mégis", "ugye", "vajon", "egyébként", "valóban", "tényleg",
+    "minden", "mindenki", "mindig", "sehol", "soha", "sose", "sosem",
+    "vele", "nála", "náluk", "tőle", "tőlük", "rá", "rájuk", "tőlem",
+}
 
 BERTOPIC_EMBEDDING_MODELL = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
 BERTOPIC_EMBEDDING_MAPPA  = MODELL_MAPPA / "bertopic-embedding"
 
 
 def _get_bertopic_embedding():
-    """
-    Betölti a BERTopic embedding modellt helyi cache-ből.
-    """
+    """Betölti a BERTopic embedding modellt helyi cache-ből."""
     from sentence_transformers import SentenceTransformer
 
     if BERTOPIC_EMBEDDING_MAPPA.exists():
@@ -768,23 +798,92 @@ def _get_bertopic_embedding():
     return modell
 
 
-def generalj_temakat(szovegek: List[str], min_topic_size: int = 3) -> List[str]:
+def generalj_temakat(szovegek: List[str]) -> List[str]:
     """
-    BERTopic témamodellezés automatikus fallback-kel.
+    Per-dokumentum kulcsszó-kinyerés TF-IDF alapon.
 
-    FIX: min_topic_size alapértéke 3-ra csökkentve (volt: 5),
-    és dinamikusan igazodik a szöveghalmaz méretéhez.
-    Ez drasztikusan csökkenti a "-1 / Besorolatlan" arányát kis halmazokban.
+    Minden sor KIZÁRÓLAG A SAJÁT szövegének kulcsszavait kapja meg.
+    Nincs klaszter-szintű áthallás: "Fantasztikus kiszolgálás" nem kapja
+    meg a "hús, hideg" kulcsszavakat csak azért, mert étterem témájú.
 
-    Teljesen lokális futás.
+    Algoritmus:
+      1. TF-IDF vectorizer az egész korpuszon (IDF = ritkaság súlyozás)
+      2. Minden dokumentumhoz a saját TF-IDF legmagasabb értékű 5 szava
+      3. Fallback: szógyakoriság, ha TF-IDF nem elérhető
+
+    Visszatér: ['kulcsszó1, kulcsszó2, ...'] per sor
     """
     if not szovegek:
         return []
 
-    # Szűrjük ki az üres/rövid szövegeket a BERTopic számára
-    # (de megőrizzük az eredeti indexeket a visszaíráshoz)
-    if len(szovegek) < 3:
-        return _egyszeru_tema_fallback(szovegek)
+    try:
+        from sklearn.feature_extraction.text import TfidfVectorizer
+        import numpy as np
+
+        # TF-IDF: min_df=1 (minden szót figyelembe vesz),
+        #         ngram_range=(1,1) – egyedi szavak per dokumentum
+        vectorizer = TfidfVectorizer(
+            min_df=1,
+            max_df=0.95,          # Túl gyakori (szinte mindenben lévő) szavak kizárva
+            ngram_range=(1, 1),
+            max_features=10000,
+            token_pattern=r'\b[a-záéíóöőúüű]{4,}\b',  # Magyar betűk, min 4 karakter
+            stop_words=list(_HU_STOPSZAVAK),
+        )
+
+        tfidf_matrix = vectorizer.fit_transform(szovegek)
+        feature_names = vectorizer.get_feature_names_out()
+
+        eredmeny = []
+        for i in range(tfidf_matrix.shape[0]):
+            sor = tfidf_matrix[i].toarray().flatten()
+            # Top 5 szó az adott dokumentumban TF-IDF szerint
+            top_idx = sor.argsort()[::-1][:5]
+            top_szavak = [feature_names[j] for j in top_idx if sor[j] > 0.0]
+            if top_szavak:
+                eredmeny.append(", ".join(top_szavak))
+            else:
+                # Fallback: egyszerű szógyakoriság ebből a szövegből
+                eredmeny.append(_egy_szoveg_kulcsszavak(szovegek[i]))
+
+        print(f"   TF-IDF kulcsszó-kinyerés: {len(eredmeny)} sor feldolgozva")
+        return eredmeny
+
+    except ImportError:
+        print("   sklearn nem elérhető, egyszerű kulcsszó-kinyerés fut")
+        return [_egy_szoveg_kulcsszavak(sz) for sz in szovegek]
+    except Exception as e:
+        print(f"   TF-IDF hiba ({e}), egyszerű fallback")
+        return [_egy_szoveg_kulcsszavak(sz) for sz in szovegek]
+
+
+def _egy_szoveg_kulcsszavak(szoveg: str) -> str:
+    """Egyszerű szógyakoriság-alapú kulcsszó-kinyerés egyetlen szövegből."""
+    szavak = re.findall(r'\b[a-záéíóöőúüű]{4,}\b', szoveg.lower())
+    szurt  = [s for s in szavak if s not in _HU_STOPSZAVAK]
+    top    = [w for w, _ in Counter(szurt).most_common(5)]
+    return ", ".join(top) if top else "Általános"
+
+
+def generalj_bertopic(szovegek: List[str], min_topic_size: int = 3) -> dict:
+    """
+    BERTopic klaszterezés a TELJES korpuszon – a Témaelemzés lap számára.
+
+    Ez a függvény KLASZTER-SZINTŰ elemzést végez: meghatározza a korpusz
+    fő témacsoportjait és azok kulcsszavait. A visszatérési értéke dict,
+    amelyet a riport_generator.py a Témaelemzés lapra ír.
+
+    FONTOS: Ez az eredmény NEM kerül a sorok mellé – csak az összesítő tabba.
+
+    Visszatér: {
+        'tema_lista':   [str, ...],   # klaszter neve (kulcsszavak)
+        'topic_ids':    [int, ...],   # topic_id per dokumentum
+        'topic_info':   DataFrame,    # BERTopic topic_info táblája
+        'n_topics':     int,
+    }
+    """
+    if not szovegek or len(szovegek) < 3:
+        return {'tema_lista': [], 'topic_ids': [], 'topic_info': None, 'n_topics': 0}
 
     try:
         from bertopic import BERTopic
@@ -792,7 +891,6 @@ def generalj_temakat(szovegek: List[str], min_topic_size: int = 3) -> List[str]:
 
         embedding_model = _get_bertopic_embedding()
 
-        # FIX: min_topic_size dinamikus – kis halmaznál kisebb érték
         n = len(szovegek)
         if n < 20:
             min_size = 2
@@ -816,44 +914,41 @@ def generalj_temakat(szovegek: List[str], min_topic_size: int = 3) -> List[str]:
 
         topics, _ = topic_model.fit_transform(szovegek)
 
-        tema_lista = []
-        for topic_id in topics:
-            if topic_id == -1:
-                tema_lista.append("Vegyes / Besorolatlan")
+        # Klaszter-szintű témanevek
+        tema_nevek = {}
+        for tid in set(topics):
+            if tid == -1:
+                tema_nevek[tid] = "Vegyes / Besorolatlan"
             else:
                 try:
-                    top_words   = topic_model.get_topic(topic_id)
-                    kulcsszavak = (
+                    top_words = topic_model.get_topic(tid)
+                    tema_nevek[tid] = (
                         ", ".join(w for w, _ in top_words[:5])
-                        if top_words else f"Téma {topic_id}"
+                        if top_words else f"Téma {tid}"
                     )
-                    tema_lista.append(kulcsszavak)
                 except Exception:
-                    tema_lista.append(f"Téma {topic_id}")
+                    tema_nevek[tid] = f"Téma {tid}"
+
+        tema_lista = [tema_nevek.get(tid, "Ismeretlen") for tid in topics]
+
+        try:
+            topic_info = topic_model.get_topic_info()
+        except Exception:
+            topic_info = None
 
         unique = len(set(t for t in topics if t != -1))
-        print(f"   BERTopic: {unique} témakör feltárva")
-        return tema_lista
+        print(f"   BERTopic: {unique} témakör feltárva a korpuszban")
+
+        return {
+            'tema_lista': tema_lista,
+            'topic_ids':  topics,
+            'topic_info': topic_info,
+            'n_topics':   unique,
+        }
 
     except ImportError:
-        return _egyszeru_tema_fallback(szovegek)
+        print("   BERTopic nem elérhető, Témaelemzés lap üres lesz")
+        return {'tema_lista': [], 'topic_ids': [], 'topic_info': None, 'n_topics': 0}
     except Exception as e:
         print(f"   BERTopic hiba: {e}")
-        return _egyszeru_tema_fallback(szovegek)
-
-
-def _egyszeru_tema_fallback(szovegek: List[str]) -> List[str]:
-    """Szógyakoriság-alapú téma-hozzárendelés BERTopic nélkül."""
-    STOPSZAVAK = {
-        "a", "az", "és", "hogy", "is", "de", "meg", "egy", "el", "van",
-        "nem", "ezt", "azt", "ez", "én", "te", "mi", "ti", "ők", "ami",
-        "aki", "volt", "lett", "csak", "már", "még", "sem", "se", "ha",
-        "ki", "be", "fel", "le", "on", "ön", "őt", "itt",
-    }
-    eredmeny = []
-    for szoveg in szovegek:
-        szavak = re.findall(r'\b\w{4,}\b', szoveg.lower())
-        szurt  = [s for s in szavak if s not in STOPSZAVAK]
-        top    = [w for w, _ in Counter(szurt).most_common(5)]
-        eredmeny.append(", ".join(top) if top else "Általános")
-    return eredmeny
+        return {'tema_lista': [], 'topic_ids': [], 'topic_info': None, 'n_topics': 0}

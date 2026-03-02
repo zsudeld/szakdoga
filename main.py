@@ -13,16 +13,16 @@ import sys
 
 import pandas as pd
 
-from huspacy_elemzo import FejlettSentimentElemzo, generalj_temakat
+from huspacy_elemzo import FejlettSentimentElemzo, generalj_temakat, generalj_bertopic
 from riport_generator import generalj_riportot
 from utils import ellenorizd_fuggosegeket, intelligens_csv_beolvasas, optimalis_oszlop
 
 BANNER = """
 ╔═══════════════════════════════════════════════════════════╗
 ║                                                           ║
-║   PROFESSZIONALIS SENTIMENT ELEMZO  v2                    ║
+║   PROFESSZIONALIS SENTIMENT ELEMZO                        ║
 ║                                                           ║
-║   HuSpaCy + HunBERT + BERTopic                           ║
+║   HuSpaCy + HunBERT + BERTopic                            ║
 ║   Magyar NLP Pipeline Teljes Kapacitassal                 ║
 ║                                                           ║
 ╚═══════════════════════════════════════════════════════════╝
@@ -94,20 +94,32 @@ def inditas():
     print("\n\nSentiment elemzes befejezve!")
     df_final = pd.DataFrame(eredmenyek)
 
-    # 8. BERTopic
+    # 8. Téma – két szint
     print("\n" + "=" * 60)
-    print("TEMAMODELLEZES (BERTopic)")
+    print("TEMAMODELLEZES")
     print("=" * 60 + "\n")
 
     lemmatizalt = df_final.get('lemmatizalt_szoveg', pd.Series(texts)).tolist()
-    temak       = generalj_temakat(lemmatizalt)
 
-    if len(temak) == len(df_final):
-        df_final['tema_kulcsszavak'] = temak
-        print("Temak sikeresen generalva!\n")
+    # 8a. Per-dokumentum kulcsszavak (TF-IDF) → Elemzési Eredmények lap "Téma" oszlop
+    #     Minden sor a SAJÁT tartalmát tükrözi, nincs klaszter-áthallás.
+    print("Per-dokumentum kulcsszó-kinyerés (TF-IDF)...")
+    per_doc_temak = generalj_temakat(lemmatizalt)
+    if len(per_doc_temak) == len(df_final):
+        df_final['tema_kulcsszavak'] = per_doc_temak
     else:
-        df_final['tema_kulcsszavak'] = "Tema hiba"
-        print("Temak reszben generalhatok\n")
+        df_final['tema_kulcsszavak'] = "Téma hiba"
+
+    # 8b. BERTopic klaszterezés → Témaelemzés lap összesítő táblája
+    #     Klaszter-szintű témák a TELJES korpuszra – helyes felhasználás.
+    print("BERTopic klaszterezés (korpusz-szintű témák)...")
+    bertopic_eredmeny = generalj_bertopic(lemmatizalt)
+    if bertopic_eredmeny['tema_lista'] and len(bertopic_eredmeny['tema_lista']) == len(df_final):
+        df_final['bertopic_tema'] = bertopic_eredmeny['tema_lista']
+    else:
+        df_final['bertopic_tema'] = df_final['tema_kulcsszavak']
+
+    print("Témák sikeresen generálva!\n")
 
     # 9. Statisztikák
     print("=" * 60)
