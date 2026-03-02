@@ -73,15 +73,20 @@ POZITIV_SZAVAK: set = {
     "strukturált", "interaktív", "élvezetes", "tanulságos",
     # Fokozók önállóan is pozitív értékkel
     "kimagasló", "kiemelkedő", "elsőrangú", "méltányolandó",
-    # Kibővítés
-    "pontos", "részletes", "átfogó", "érdekes", "informatív",
+    # Pontosság és részletesség
+    "pontos", "részletes", "átfogó", "informatív",
     "megbízható", "stabil", "tiszta", "egyértelmű", "gördülékeny",
     "kényelmes", "szervezett", "következetes", "rugalmas", "támogató",
     "ösztönző", "figyelmes", "gondos", "kreatív", "eredeti",
-    "friss", "modern", "naprakész", "releváns", "megfelelő",
+    "friss", "modern", "releváns", "megfelelő",
     "gyors", "hatásos", "eredményes", "teljes", "komplex",
     "különleges", "kiemelten", "magas", "erős", "szilárd",
     "élő", "pezsgő", "aktív", "bevonó", "öszintén", "igaz",
+    # Műszaki/oktatási kontextus
+    "működőképes", "működik", "működő", "helyes", "szófogadó",
+    "biztos", "futtat", "intuitív", "célszerű", "értelmes",
+    "didaktikai", "értékes", "ismeretgazdagító", "szisztematikus",
+    "felépített", "metodikus", "közérthető", "felfogható",
 }
 
 NEGATIV_SZAVAK: set = {
@@ -100,15 +105,20 @@ NEGATIV_SZAVAK: set = {
     "felkészületlen", "türelmetlen", "lekezelő",
     # Fokozók önállóan is negatív értékkel
     "elfogadhatatlan", "tarthatatlan", "siralmas",
-    # Kibővítés
-    "rossz", "nehéz", "bonyolult", "zavaró", "kellemetlen",
-    "homályos", "kusza", "megbízhatatlan", "hiányos", "töredékes",
-    "felületes", "sekélyes", "sivár", "érdektelen", "ósdi",
-    "lassú", "akadozó", "bugos", "törött", "nem_működik",
+    # Egyéb problémák (duplikáció nélkül)
+    "bonyolult", "zavaró", "kellemetlen",
+    "homályos", "kusza", "megbízhatatlan", "töredékes",
+    "sekélyes", "sivár", "érdektelen", "ósdi",
+    "akadozó", "bugos", "törött",
     "értéktelen", "haszontalan", "kárba", "veszteség",
-    "nehézkes", "körülményes", "macerás", "fárasztó", "kimerítő",
-    "unszolós", "tolakodó", "zavaró", "elviselhetetlen", "terhes",
+    "körülményes", "macerás", "fárasztó", "kimerítő",
+    "unszolós", "tolakodó", "elviselhetetlen", "terhes",
     "csalódás", "cserbenhagyott", "becsapott", "félrevezető",
+    # Műszaki/oktatási kontextus
+    "nem_működik", "nem_működő", "nem_megfelelő", "nem_teljesítő",
+    "funkcionálatlan", "hiba", "kritikus", "nem_naprakész",
+    "nem_érdekes", "tanulás_nélküli", "nem_tanulságos",
+    "szisztéma_nélküli", "felépítés_nélküli", "véletlenszerű",
 }
 
 FOKOZOK: set = {
@@ -116,6 +126,8 @@ FOKOZOK: set = {
     "eléggé", "igazán", "teljesen", "abszolút", "végtelenül",
     "meglehetősen", "elég", "igencsak", "alaposan",
     "rendkívüli", "kivételesen", "határozottan", "erősen", "mélyen",
+    "igazán", "érdemben", "valóban", "lényegesen", "jelentősen",
+    "sokkal", "jóval", "kézzelfoghatóan", "drámaian", "nyilvánvalóan",
 }
 
 NEGACIOK: set = {
@@ -353,13 +365,20 @@ def _szotari_pontszam(doc) -> float:
     Bővített szótár-alapú pontszámítás HuSpaCy Doc objektumon.
     Scope-alapú negációkezeléssel és fokozók figyelembevételével.
 
-    Normalizáció: sqrt(token_szam) – hosszú szövegek sem torzítanak semleges felé.
+    v2.1 javítás: Dinamikus normalizáció – kis szövegek nem zérósodnak,
+    hosszú szövegek sem torzítanak semleges felé.
+
+    Normalizáció:
+      - Rövid szöveg (≤5 tartalmas szó): nincs normalizáció
+      - Közepes szöveg (6-15 szó): félig normalizálunk
+      - Hosszú szöveg (>15 szó): teljes normalizáció
+
     Visszatér: [-1.0 … +1.0]
     """
     pont = 0.0
 
     for token in doc:
-        lemma = token.lemma_.lower()
+        lemma = token.lemma_.lower().strip()
         if lemma not in POZITIV_SZAVAK and lemma not in NEGATIV_SZAVAK:
             continue
 
@@ -380,10 +399,37 @@ def _szotari_pontszam(doc) -> float:
             # ("nem rossz" mérsékelt pozitív, gyengébb mint "jó")
             pont += (0.4 if negalt else -0.8) * szorzo
 
-    # sqrt-alapú normalizáció: sokkal igazságosabb hosszú szövegeknél
-    token_szam = max(len([t for t in doc if not t.is_space]), 1)
-    norm = max(math.sqrt(token_szam), 1.0)
-    return max(-1.0, min(1.0, pont / norm * 1.8))
+    # ─────────────────────────────────────────────────────────────────────
+    # DINAMIKUS NORMALIZÁCIÓ (v2.1)
+    # ─────────────────────────────────────────────────────────────────────
+
+    # Tartalmas szavak (főnevekhez, igékhez, melléknevekhez)
+    tartalmas_szavak = [
+        t for t in doc 
+        if not t.is_space and t.pos_ in ('NOUN', 'VERB', 'ADJ', 'ADV')
+    ]
+    tartalmas_szam = len(tartalmas_szavak)
+
+    if tartalmas_szam == 0:
+        # Nincs tartalmas szó → semleges
+        return 0.0
+
+    # Dinamikus normalizáció küszöbértékek alapján
+    if tartalmas_szam <= 5:
+        # Nagyon rövid szöveg: nincs normalizáció
+        norm = 1.0
+        szorzo = 1.5
+    elif tartalmas_szam <= 15:
+        # Rövid szöveg: félig normalizálunk
+        norm = max(1.0, math.sqrt(tartalmas_szam / 2))
+        szorzo = 1.2
+    else:
+        # Hosszú szöveg: teljes normalizáció
+        norm = max(1.0, math.sqrt(tartalmas_szam))
+        szorzo = 1.0
+
+    final_pont = pont / norm * szorzo
+    return max(-1.0, min(1.0, final_pont * 1.8))
 
 
 # ---------------------------------------------------------------------------
