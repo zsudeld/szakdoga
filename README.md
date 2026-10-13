@@ -3,6 +3,8 @@
 Professzionális NLP eszköz magyar nyelvű szövegek automatikus sentiment elemzéséhez.  
 A program hibrid architektúrát alkalmaz: szótári módszer, fine-tuned transzformer modell és témafeltárás kombinációjával dolgozik, minden feldolgozás **lokálisan, internet nélkül** fut (GDPR-kompatibilis).
 
+
+
 ---
 
 ## Technológiai stack
